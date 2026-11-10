@@ -1,0 +1,282 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
+<title>Neon Lane Rush</title>
+<style>
+  *{box-sizing:border-box;-webkit-tap-highlight-color:transparent;user-select:none;-webkit-user-select:none}
+  html,body{margin:0;height:100%;background:#0d0f1c;overflow:hidden;font-family:system-ui,-apple-system,Segoe UI,Roboto,Arial,sans-serif;color:#fff;touch-action:none}
+  #wrap{position:fixed;inset:0;display:flex;align-items:center;justify-content:center}
+  #stage{position:relative;height:100%;aspect-ratio:400/700;max-width:100%;max-height:100%}
+  canvas{position:absolute;inset:0;width:100%;height:100%;background:#12142a}
+  .panel{position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:14px;background:rgba(10,12,28,.82);text-align:center;padding:20px}
+  .hidden{display:none!important}
+  h1{margin:0;font-size:clamp(30px,8vw,46px);letter-spacing:1px;color:#b8ff3c;text-shadow:0 0 18px #b8ff3c88}
+  h2{margin:0;font-size:32px;color:#ff4d8d}
+  p{margin:0;opacity:.85;font-size:15px}
+  button{font:inherit;font-weight:800;border:0;border-radius:14px;padding:14px 34px;font-size:20px;background:#b8ff3c;color:#10131f;cursor:pointer;box-shadow:0 5px 0 #7fb41d}
+  button:active{transform:translateY(3px);box-shadow:0 2px 0 #7fb41d}
+  .swatches{display:flex;gap:10px;flex-wrap:wrap;justify-content:center}
+  .sw{width:46px;height:46px;border-radius:12px;border:3px solid #fff3;position:relative;cursor:pointer}
+  .sw.sel{border-color:#fff}
+  .sw.lock::after{content:attr(data-cost);position:absolute;inset:0;display:flex;align-items:center;justify-content:center;background:#000a;border-radius:9px;font-size:12px;font-weight:800}
+  #hud{position:absolute;top:10px;left:12px;right:12px;display:flex;justify-content:space-between;align-items:center;pointer-events:none;font-weight:800;font-size:20px;text-shadow:0 2px 6px #000}
+  #mute{pointer-events:auto;padding:6px 12px;font-size:18px;border-radius:10px;box-shadow:none;background:#ffffff22;color:#fff}
+  .stat{font-size:18px}
+  .new{color:#ffd23c;font-weight:800}
+</style>
+</head>
+<body>
+<div id="wrap">
+  <div id="stage">
+    <canvas id="c" width="400" height="700"></canvas>
+    <div id="hud" class="hidden">
+      <span id="score">0</span>
+      <span id="coins">🪙 0</span>
+      <button id="mute">🔊</button>
+    </div>
+
+    <div id="menu" class="panel">
+      <h1>NEON LANE RUSH</h1>
+      <p>Dodge traffic. Grab coins. Go faster.</p>
+      <div class="swatches" id="swatches"></div>
+      <p id="bank"></p>
+      <button id="play">PLAY</button>
+      <p style="font-size:13px">← → / A D / Swipe / Tap left or right</p>
+    </div>
+
+    <div id="over" class="panel hidden">
+      <h2>CRASH!</h2>
+      <div id="result" class="stat"></div>
+      <button id="again">PLAY AGAIN</button>
+      <button id="home" style="background:#ffffff22;color:#fff;box-shadow:0 5px 0 #0006;font-size:16px;padding:10px 24px">MENU</button>
+    </div>
+  </div>
+</div>
+
+<script src="https://sdk.crazygames.com/crazygames-sdk-v3.js"></script>
+<script>
+/* ---------- CrazyGames SDK (safe wrapper: game also runs standalone) ---------- */
+const CG = {
+  ready:false,
+  async init(){ try{ if(window.CrazyGames&&CrazyGames.SDK){ await CrazyGames.SDK.init(); this.ready=true; } }catch(e){} },
+  loadStart(){ try{ this.ready&&CrazyGames.SDK.game.loadingStart(); }catch(e){} },
+  loadStop(){ try{ this.ready&&CrazyGames.SDK.game.loadingStop(); }catch(e){} },
+  start(){ try{ this.ready&&CrazyGames.SDK.game.gameplayStart(); }catch(e){} },
+  stop(){ try{ this.ready&&CrazyGames.SDK.game.gameplayStop(); }catch(e){} },
+  happy(){ try{ this.ready&&CrazyGames.SDK.game.happytime(); }catch(e){} }
+};
+
+/* ---------- Save ---------- */
+let save={best:0,coins:0,owned:[0],sel:0};
+try{ const s=JSON.parse(localStorage.getItem('nlr')); if(s) save=Object.assign(save,s); }catch(e){}
+const persist=()=>{ try{ localStorage.setItem('nlr',JSON.stringify(save)); }catch(e){} };
+
+const COLORS=[{c:'#2ee6ff',cost:0},{c:'#ff4d8d',cost:50},{c:'#b8ff3c',cost:120},{c:'#ffd23c',cost:250},{c:'#a56bff',cost:400}];
+
+/* ---------- Audio ---------- */
+let AC=null, muted=false;
+function tone(f,d,type='square',vol=.05,slide=0){
+  if(muted) return;
+  try{
+    AC=AC||new (window.AudioContext||window.webkitAudioContext)();
+    const o=AC.createOscillator(),g=AC.createGain();
+    o.type=type;o.frequency.value=f; if(slide) o.frequency.exponentialRampToValueAtTime(Math.max(30,f+slide),AC.currentTime+d);
+    g.gain.value=vol; g.gain.exponentialRampToValueAtTime(.0001,AC.currentTime+d);
+    o.connect(g);g.connect(AC.destination);o.start();o.stop(AC.currentTime+d);
+  }catch(e){}
+}
+const sfx={coin:()=>{tone(880,.08);setTimeout(()=>tone(1320,.1),60)},move:()=>tone(300,.05,'triangle',.04),
+  crash:()=>tone(160,.5,'sawtooth',.12,-120),near:()=>tone(660,.08,'triangle',.05)};
+
+/* ---------- Game ---------- */
+const cv=document.getElementById('c'),ctx=cv.getContext('2d');
+const W=400,H=700, ROAD_L=50, ROAD_W=300, LANES=3, LW=ROAD_W/LANES;
+const laneX=i=>ROAD_L+LW*i+LW/2;
+const PY=570, CAR_W=52, CAR_H=88;
+
+let state='menu', lane=1, px=laneX(1), targetLane=1;
+let obs=[], coins=[], parts=[], speed=0, dist=0, got=0, spawnT=0, coinT=0, roadOff=0, shake=0, nearCool=0;
+const $=id=>document.getElementById(id);
+
+function reset(){
+  lane=targetLane=1; px=laneX(1); obs=[]; coins=[]; parts=[];
+  speed=300; dist=0; got=0; spawnT=0.6; coinT=1; shake=0;
+}
+function startGame(){
+  reset(); state='play';
+  $('menu').classList.add('hidden'); $('over').classList.add('hidden'); $('hud').classList.remove('hidden');
+  CG.start();
+}
+function endGame(){
+  state='over'; sfx.crash(); shake=18; CG.stop();
+  const score=Math.floor(dist/10);
+  const isBest=score>save.best; if(isBest) save.best=score;
+  save.coins+=got; persist();
+  $('result').innerHTML=`Score: <b>${score}</b><br>Coins: 🪙 ${got}<br>Best: ${save.best} ${isBest?'<span class="new">NEW BEST!</span>':''}`;
+  if(isBest) CG.happy();
+  setTimeout(()=>{ $('hud').classList.add('hidden'); $('over').classList.remove('hidden'); },650);
+}
+function toMenu(){ state='menu'; $('over').classList.add('hidden'); $('hud').classList.add('hidden'); $('menu').classList.remove('hidden'); buildSwatches(); }
+
+function move(d){
+  if(state!=='play') return;
+  const n=Math.max(0,Math.min(LANES-1,targetLane+d));
+  if(n!==targetLane){ targetLane=n; sfx.move(); }
+}
+
+/* Spawn: never block all 3 lanes at the same time */
+function spawn(){
+  const free=Math.floor(Math.random()*LANES);
+  for(let i=0;i<LANES;i++){
+    if(i===free) continue;
+    if(Math.random()<0.55){
+      obs.push({lane:i,y:-120,col:['#ff5a5a','#ff9a3c','#8a8fff','#e6e6e6'][Math.random()*4|0],truck:Math.random()<.2});
+    }
+  }
+  // guarantee a coin in the free lane sometimes
+  if(Math.random()<.5) coins.push({lane:free,y:-60});
+}
+
+function update(dt){
+  roadOff=(roadOff+speed*dt)%80;
+  if(state!=='play'){ shake*=.9; return; }
+  speed=Math.min(760,300+dist*0.018);
+  dist+=speed*dt;
+  px+=(laneX(targetLane)-px)*Math.min(1,dt*16);
+  lane=targetLane;
+
+  spawnT-=dt;
+  if(spawnT<=0){ spawn(); spawnT=Math.max(.55,1.25-speed/900)+Math.random()*.25; }
+  nearCool-=dt;
+
+  for(const o of obs){
+    o.y+=(speed*.62)*dt+ (speed*.38)*dt; // relative speed
+    const ox=laneX(o.lane), oh=o.truck?118:88;
+    if(Math.abs(ox-px)<CAR_W-6 && Math.abs(o.y-PY)<(oh+CAR_H)/2-10){ endGame(); return; }
+    if(!o.near && Math.abs(ox-px)<LW*0.95 && Math.abs(ox-px)>CAR_W-6 && Math.abs(o.y-PY)<60 && nearCool<=0){
+      o.near=true; nearCool=.25; dist+=150; sfx.near(); burst(px,PY,'#fff',5);
+    }
+  }
+  obs=obs.filter(o=>o.y<H+140);
+
+  for(const c of coins){
+    c.y+=speed*dt;
+    if(!c.got && Math.abs(laneX(c.lane)-px)<40 && Math.abs(c.y-PY)<50){
+      c.got=true; got++; sfx.coin(); burst(laneX(c.lane),c.y,'#ffd23c',8);
+    }
+  }
+  coins=coins.filter(c=>!c.got&&c.y<H+40);
+
+  $('score').textContent=Math.floor(dist/10);
+  $('coins').textContent='🪙 '+got;
+}
+
+function burst(x,y,col,n){ for(let i=0;i<n;i++) parts.push({x,y,vx:(Math.random()-.5)*260,vy:(Math.random()-.5)*260,life:.5,col}); }
+
+function drawCar(x,y,w,h,col,player){
+  ctx.save(); ctx.translate(x,y);
+  if(player){ ctx.shadowColor=col; ctx.shadowBlur=22; }
+  ctx.fillStyle=col; rr(-w/2,-h/2,w,h,10); ctx.fill();
+  ctx.shadowBlur=0;
+  ctx.fillStyle='#0b0d1acc'; rr(-w/2+7,-h/2+(player?16:h-34),w-14,18,5); ctx.fill();
+  ctx.fillStyle='#0b0d1a99'; rr(-w/2+7,h/2-(player?26:h-16),w-14,12,4); ctx.fill();
+  ctx.fillStyle=player?'#fff':'#ffdd88'; ctx.fillRect(-w/2+4,-h/2+2,9,5); ctx.fillRect(w/2-13,-h/2+2,9,5);
+  ctx.restore();
+}
+function rr(x,y,w,h,r){ ctx.beginPath(); ctx.moveTo(x+r,y); ctx.arcTo(x+w,y,x+w,y+h,r); ctx.arcTo(x+w,y+h,x,y+h,r); ctx.arcTo(x,y+h,x,y,r); ctx.arcTo(x,y,x+w,y,r); ctx.closePath(); }
+
+function draw(){
+  ctx.save();
+  if(shake>.5) ctx.translate((Math.random()-.5)*shake,(Math.random()-.5)*shake);
+  ctx.fillStyle='#12142a'; ctx.fillRect(0,0,W,H);
+  // side glow
+  ctx.fillStyle='#1a1d3d'; ctx.fillRect(0,0,ROAD_L,H); ctx.fillRect(ROAD_L+ROAD_W,0,ROAD_L,H);
+  ctx.fillStyle='#1b1e3a'; ctx.fillRect(ROAD_L,0,ROAD_W,H);
+  ctx.fillStyle='#2ee6ff'; ctx.fillRect(ROAD_L-4,0,4,H); ctx.fillRect(ROAD_L+ROAD_W,0,4,H);
+  // lane dashes
+  ctx.fillStyle='#ffffff40';
+  for(let i=1;i<LANES;i++) for(let y=-80+roadOff;y<H;y+=80) ctx.fillRect(ROAD_L+LW*i-2,y,4,40);
+
+  for(const c of coins){
+    const x=laneX(c.lane);
+    ctx.fillStyle='#ffd23c'; ctx.shadowColor='#ffd23c'; ctx.shadowBlur=14;
+    ctx.beginPath(); ctx.arc(x,c.y,13,0,7); ctx.fill(); ctx.shadowBlur=0;
+    ctx.fillStyle='#b88a00'; ctx.font='bold 16px sans-serif'; ctx.textAlign='center'; ctx.fillText('$',x,c.y+6);
+  }
+  for(const o of obs) drawCar(laneX(o.lane),o.y,CAR_W,o.truck?118:88,o.col,false);
+  if(state!=='over' || shake>1) drawCar(px,PY,CAR_W,CAR_H,COLORS[save.sel].c,true);
+
+  for(const p of parts){ ctx.globalAlpha=Math.max(0,p.life*2); ctx.fillStyle=p.col; ctx.fillRect(p.x,p.y,5,5); }
+  ctx.globalAlpha=1;
+  ctx.restore();
+}
+
+let last=0, paused=false;
+function loop(t){
+  const dt=Math.min(.05,(t-last)/1000||0); last=t;
+  if(!paused){
+    update(dt);
+    for(const p of parts){ p.x+=p.vx*dt; p.y+=p.vy*dt; p.life-=dt; }
+    parts=parts.filter(p=>p.life>0);
+  }
+  draw(); requestAnimationFrame(loop);
+}
+
+/* ---------- Input ---------- */
+addEventListener('keydown',e=>{
+  if(['ArrowLeft','a','A'].includes(e.key)){ e.preventDefault(); move(-1); }
+  else if(['ArrowRight','d','D'].includes(e.key)){ e.preventDefault(); move(1); }
+  else if((e.key==='Enter'||e.key===' ')&&state!=='play'){ e.preventDefault(); startGame(); }
+});
+let tx=null;
+const stage=$('stage');
+stage.addEventListener('touchstart',e=>{ tx=e.touches[0].clientX; },{passive:true});
+stage.addEventListener('touchend',e=>{
+  if(state!=='play'||tx===null) return;
+  const dx=e.changedTouches[0].clientX-tx;
+  if(Math.abs(dx)>30) move(dx>0?1:-1);
+  else { const r=stage.getBoundingClientRect(); move(e.changedTouches[0].clientX<r.left+r.width/2?-1:1); }
+  tx=null;
+});
+stage.addEventListener('mousedown',e=>{
+  if(state!=='play'||e.target.closest('button')) return;
+  const r=stage.getBoundingClientRect(); move(e.clientX<r.left+r.width/2?-1:1);
+});
+
+/* Pause automatically when tab loses focus */
+function setPause(p){ if(state!=='play') return; paused=p; p?CG.stop():CG.start(); }
+document.addEventListener('visibilitychange',()=>setPause(document.hidden));
+addEventListener('blur',()=>setPause(true)); addEventListener('focus',()=>setPause(false));
+
+/* ---------- UI ---------- */
+function buildSwatches(){
+  const box=$('swatches'); box.innerHTML='';
+  COLORS.forEach((k,i)=>{
+    const d=document.createElement('div');
+    const owned=save.owned.includes(i);
+    d.className='sw'+(save.sel===i?' sel':'')+(owned?'':' lock');
+    d.style.background=k.c; d.dataset.cost=k.cost;
+    d.onclick=()=>{
+      if(owned){ save.sel=i; }
+      else if(save.coins>=k.cost){ save.coins-=k.cost; save.owned.push(i); save.sel=i; sfx.coin(); }
+      persist(); buildSwatches();
+    };
+    box.appendChild(d);
+  });
+  $('bank').textContent=`🪙 ${save.coins}   •   Best: ${save.best}`;
+}
+$('play').onclick=startGame; $('again').onclick=startGame; $('home').onclick=toMenu;
+$('mute').onclick=e=>{ muted=!muted; e.target.textContent=muted?'🔇':'🔊'; };
+
+(async function boot(){
+  CG.loadStart();
+  await CG.init();
+  buildSwatches(); reset();
+  requestAnimationFrame(loop);
+  CG.loadStop();
+})();
+</script>
+</body>
+</html>
